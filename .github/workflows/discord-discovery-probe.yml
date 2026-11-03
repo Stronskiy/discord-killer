@@ -1,0 +1,157 @@
+name: Discord Windows discovery probe (temporary)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  discord-discovery-probe:
+    name: Discord discovery probe (ephemeral runner)
+    # Never install third-party software for a fork or unrelated branch.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'feat/windows-mvp' &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: windows-latest
+    timeout-minutes: 6
+    steps:
+      - name: Collect limited evidence on an isolated Windows runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $status = 'blocked'
+          $reason = 'probe did not complete'
+          $source = 'https://discordapp.com/api/download?platform=win'
+          $installer = Join-Path $env:RUNNER_TEMP 'discord-probe-setup.exe'
+          $installRoot = Join-Path $env:LOCALAPPDATA 'Discord'
+          $vendor = '(?i)(?:^|,\s*)CN=Discord,?\s+Inc\.?(?:,|$)'
+
+          function Get-SafeSignature([string] $Path) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $Path
+            $subject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '<none>' }
+            return @{ Status = [string]$signature.Status; Subject = $subject }
+          }
+
+          function Start-IsolatedProcess([string] $Path, [string] $Arguments) {
+            $info = [System.Diagnostics.ProcessStartInfo]::new()
+            $info.FileName = $Path
+            $info.Arguments = $Arguments
+            $info.UseShellExecute = $false
+            $info.CreateNoWindow = $true
+            $info.RedirectStandardOutput = $true
+            $info.RedirectStandardError = $true
+            # Never pass workflow credentials or runner service tokens to Discord.
+            foreach ($key in @($info.Environment.Keys)) {
+              if ($key -match '(?i)TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|^GITHUB_|^ACTIONS_') {
+                [void]$info.Environment.Remove($key)
+              }
+            }
+            $process = [System.Diagnostics.Process]::Start($info)
+            if (-not $process) { throw 'Process could not be started' }
+            # Drain redirected output but never write it to logs or artifacts.
+            [void]$process.StandardOutput.ReadToEndAsync()
+            [void]$process.StandardError.ReadToEndAsync()
+            return $process
+          }
+
+          try {
+            Write-Host 'Evidence scope: disposable hosted Windows VM; no Discord account, user-provided secrets, screenshots, or binary artifacts.'
+            Write-Host "Windows caption: $((Get-CimInstance Win32_OperatingSystem).Caption)"
+            Write-Host "User interactive: $([Environment]::UserInteractive)"
+            Invoke-WebRequest -Uri $source -OutFile $installer -TimeoutSec 90
+            $installerSignature = Get-SafeSignature $installer
+            Write-Host "Installer signature: $($installerSignature.Status); expected publisher match: $($installerSignature.Subject -match $vendor)"
+            Write-Host "Installer SHA-256: $((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash)"
+            if ($installerSignature.Status -ne 'Valid' -or $installerSignature.Subject -notmatch $vendor) {
+              $reason = 'installer signature or expected publisher was not verified; installer was not executed'
+              throw $reason
+            }
+
+            # Discord's silent switch is not guaranteed; a timeout is recorded as blocked.
+            $setup = Start-IsolatedProcess $installer '-s'
+            if (-not $setup.WaitForExit(120000)) {
+              $reason = 'installer did not exit within 120 seconds; silent install unverified'
+              throw $reason
+            }
+            Write-Host "Installer exit code: $($setup.ExitCode)"
+            if ($setup.ExitCode -ne 0) {
+              $reason = 'installer returned a non-zero exit code; installation not verified'
+              throw $reason
+            }
+
+            $deadline = [DateTime]::UtcNow.AddSeconds(45)
+            $exe = $null
+            do {
+              if (Test-Path -LiteralPath $installRoot) {
+                $exe = Get-ChildItem -LiteralPath $installRoot -Directory -Filter 'app-*' |
+                  Sort-Object LastWriteTime -Descending |
+                  ForEach-Object { Join-Path $_.FullName 'Discord.exe' } |
+                  Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                  Select-Object -First 1
+              }
+              if (-not $exe) { Start-Sleep -Seconds 2 }
+            } while (-not $exe -and [DateTime]::UtcNow -lt $deadline)
+            if (-not $exe) {
+              $reason = 'installed Discord executable not found within the expected observation window'
+              throw $reason
+            }
+
+            $signature = Get-SafeSignature $exe
+            Write-Host "Installed executable relative path: $([IO.Path]::GetRelativePath($installRoot, $exe))"
+            Write-Host "Executable signature: $($signature.Status); expected publisher match: $($signature.Subject -match $vendor)"
+            Write-Host "Executable SHA-256: $((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash)"
+            if ($signature.Status -ne 'Valid' -or $signature.Subject -notmatch $vendor) {
+              $reason = 'installed executable signature or publisher was not verified; application was not started'
+              throw $reason
+            }
+
+            # No authentication is performed and no Discord output is collected.
+            $launched = Start-IsolatedProcess $exe ''
+            Start-Sleep -Seconds 8
+            $candidates = @(Get-CimInstance Win32_Process -Filter "Name = 'Discord.exe'" |
+              Where-Object { $_.ExecutablePath -and [StringComparer]::OrdinalIgnoreCase.Equals($_.ExecutablePath, $exe) })
+            if ($candidates.Count -eq 0) {
+              $reason = 'no running Discord process matched the verified executable; GUI/headless behavior unverified'
+              throw $reason
+            }
+            $held = @()
+            foreach ($candidate in $candidates) {
+              try {
+                $p = [Diagnostics.Process]::GetProcessById([int]$candidate.ProcessId)
+                if (-not [StringComparer]::OrdinalIgnoreCase.Equals($p.MainModule.FileName, $exe)) { continue }
+                [void]$p.Handle
+                $p.Refresh()
+                Write-Host "Discord PID=$($p.Id) parent=$($candidate.ParentProcessId) session=$($p.SessionId) hasWindow=$($p.MainWindowHandle -ne [IntPtr]::Zero)"
+                $held += $p
+              } catch { Write-Host 'Discord candidate inaccessible or exited during observation.' }
+            }
+            $windowed = $held | Where-Object { -not $_.HasExited -and $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+            if (-not $windowed) {
+              $reason = 'no verified process exposed a main window; graceful close and tray behavior unverified'
+              throw $reason
+            }
+            $sent = $windowed.CloseMainWindow()
+            Write-Host "CloseMainWindow request sent: $sent"
+            if (-not $sent) {
+              $reason = 'CloseMainWindow returned false; graceful close behavior unverified'
+              throw $reason
+            }
+            Start-Sleep -Seconds 10
+            foreach ($p in $held) {
+              try { Write-Host "Original PID=$($p.Id) exited=$($p.HasExited)" }
+              catch { Write-Host 'Original process status unavailable.' }
+              finally { $p.Dispose() }
+            }
+            $status = 'observed'
+            $reason = 'signed installer and executable observed; result is limited to this single unauthenticated hosted run'
+          } catch {
+            if ($reason -eq 'probe did not complete') { $reason = "diagnostic failed: $($_.Exception.GetType().Name)" }
+          } finally {
+            Write-Host "STATUS=$status"
+            Write-Host "DETAIL=$reason"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Discord discovery probe: **$status**. $reason"
+          }
+          if ($status -ne 'observed') { exit 1 }
