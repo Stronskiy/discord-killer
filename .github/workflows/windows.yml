@@ -56,6 +56,18 @@ jobs:
       - name: Build Windows app
         run: dotnet build src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --configuration Release --runtime win-x64 --no-restore
 
+      - name: Run Windows process integration tests
+        run: dotnet test tests/DiscordKiller.Windows.IntegrationTests/DiscordKiller.Windows.IntegrationTests.csproj --configuration Release --logger 'trx;LogFileName=windows-integration.trx' --results-directory "$env:RUNNER_TEMP/windows-test-results"
+
+      - name: Upload Windows integration report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-integration-tests-${{ github.sha }}
+          path: ${{ runner.temp }}/windows-test-results/*.trx
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Publish self-contained Windows app
         run: dotnet publish src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --configuration Release --runtime win-x64 --self-contained true --no-restore --output "$env:RUNNER_TEMP/discord-killer-win-x64"
 
