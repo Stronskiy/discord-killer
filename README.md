@@ -11,7 +11,7 @@ Fall asleep in voice chat without leaving Discord running all night.
 </div>
 
 > [!CAUTION]
-> **Early development:** this branch attempts to close Discord. Real-world behavior is still being validated; do not rely on it to end a call. There is no published Windows release.
+> **Early development:** this app attempts to close Discord. Real-world behavior is still being validated; do not rely on it to end a call. Preview builds have important limitations described in their release notes.
 
 ![Design concept showing a timer setup window, countdown, and Windows system tray panel](assets/windows-design-concept.png)
 
@@ -21,7 +21,7 @@ Fall asleep in voice chat without leaving Discord running all night.
 
 Sometimes you want to fall asleep while friends are still chatting. discord-killer is intended to close the desktop Discord app after a chosen delay, helping prevent unexpected voice chat sounds from waking you and freeing the resources Discord was using.
 
-## Planned experience
+## How it works
 
 1. Choose a preset or enter a duration from **1 to 720 minutes**.
 2. Start the timer and keep discord-killer running in the Windows system tray.
@@ -36,9 +36,9 @@ The Windows app targets **Windows 11 x64**, with an English and Russian interfac
 
 ## Download
 
-**No release is available yet.** Once a preview is ready, its Windows archive, checksum, instructions, and known limitations will be published on the [Releases page](https://github.com/Stronskiy/discord-killer/releases).
+Find available preview archives, checksums, installation instructions, and known limitations on the [Releases page](https://github.com/Stronskiy/discord-killer/releases). Windows builds target x64; macOS builds target Apple Silicon.
 
-The initial distribution is planned as a self-contained Windows x64 ZIP. An unsigned build may trigger a Windows security warning; the packaging and signing approach are still being determined.
+The Windows ZIP is self-contained and unsigned. The macOS ZIP contains an ad-hoc-signed application that is not notarized by Apple. Both operating systems may display security warnings.
 
 ## Development
 
