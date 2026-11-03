@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Documents;
 using System.Windows.Media;
 using DiscordKiller.Core;
 using Microsoft.Win32;
@@ -113,7 +114,8 @@ internal sealed class TimerSurface : UserControl
 
         _remaining.FontSize = _compact ? 28 : 38;
         _remaining.FontWeight = FontWeights.SemiBold;
-        _remaining.FontFamily = new FontFamily("Consolas");
+        _remaining.FontFamily = new FontFamily("Segoe UI");
+        Typography.SetNumeralAlignment(_remaining, FontNumeralAlignment.Tabular);
         _remaining.TextAlignment = TextAlignment.Center;
         _remaining.HorizontalAlignment = HorizontalAlignment.Center;
         AutomationProperties.SetName(_remaining, Texts.Get("Time remaining", "Осталось времени"));
