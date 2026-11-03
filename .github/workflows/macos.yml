@@ -1,0 +1,23 @@
+name: macOS build and tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Test timer logic
+        run: bash macos/Scripts/test.sh
+      - name: Build and verify app
+        run: |
+          bash macos/Scripts/build-app.sh
+          codesign --verify --deep --strict 'macos/dist/Discord Timer.app'
+          plutil -lint 'macos/dist/Discord Timer.app/Contents/Info.plist'
+          unzip -t 'macos/dist/Discord Timer.zip'
