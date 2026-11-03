@@ -39,9 +39,11 @@ internal static class Program
             {
                 foreach (var p in candidates)
                 {
-                    if (!StringComparer.OrdinalIgnoreCase.Equals(Path.GetFullPath(p.MainModule!.FileName), Path.GetFullPath(args[1])) ||
-                        p.SessionId != Process.GetCurrentProcess().SessionId)
-                        throw new InvalidOperationException("Unexpected Discord process; refusing to run.");
+                    string image = Path.GetFullPath(p.MainModule!.FileName);
+                    bool pathMatches = StringComparer.OrdinalIgnoreCase.Equals(image, Path.GetFullPath(args[1]));
+                    bool sessionMatches = p.SessionId == Process.GetCurrentProcess().SessionId;
+                    if (!pathMatches || !sessionMatches)
+                        throw new InvalidOperationException($"Unexpected Discord process; path match={pathMatches}, session match={sessionMatches}, executable={Path.GetFileName(image)}, parent={Path.GetFileName(Path.GetDirectoryName(image))}; refusing to run.");
                     _ = p.SafeHandle; // Retain the kernel process object, not merely a PID.
                     if (WaitForSingleObject(p.SafeHandle, 0) != WaitTimeout)
                         throw new InvalidOperationException("Discord exited during observation.");
