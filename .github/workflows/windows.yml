@@ -50,12 +50,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Restore Windows app
-        run: dotnet restore src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --runtime win-x64
-
-      - name: Build Windows app
-        run: dotnet build src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --configuration Release --runtime win-x64 --no-restore
-
       - name: Run Windows process integration tests
         run: dotnet test tests/DiscordKiller.Windows.IntegrationTests/DiscordKiller.Windows.IntegrationTests.csproj --configuration Release --logger 'trx;LogFileName=windows-integration.trx' --results-directory "$env:RUNNER_TEMP/windows-test-results"
 
@@ -67,6 +61,12 @@ jobs:
           path: ${{ runner.temp }}/windows-test-results/*.trx
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Restore Windows app for publication
+        run: dotnet restore src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --runtime win-x64
+
+      - name: Build Windows app
+        run: dotnet build src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --configuration Release --runtime win-x64 --no-restore
 
       - name: Publish self-contained Windows app
         run: dotnet publish src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --configuration Release --runtime win-x64 --self-contained true --no-restore --output "$env:RUNNER_TEMP/discord-killer-win-x64"
