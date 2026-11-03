@@ -52,7 +52,8 @@ internal static class Program
             }
             catch { foreach (var p in candidates) p.Dispose(); throw; }
             if (targets.Count == 0) return Unverified("No verified running Discord processes.");
-            if (!targets.Any(p => p.MainWindowHandle != IntPtr.Zero)) return Unverified("Discord has no observable main window.");
+            var mainTarget = targets.FirstOrDefault(p => p.MainWindowHandle != IntPtr.Zero);
+            if (mainTarget is null) return Unverified("Discord has no observable main window.");
 
             var info = new ProcessStartInfo(Path.GetFullPath(args[0])) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(args[0]))! };
             foreach (var key in info.Environment.Keys.ToArray())
@@ -80,7 +81,6 @@ internal static class Program
             var clock = Stopwatch.StartNew();
             ((InvokePattern)start.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
             WaitFor("running timer", 10, () => Find(window, ControlType.Button, "Cancel timer", "Отменить таймер"));
-            var originalIds = targets.Select(p => p.Id).ToHashSet();
             bool reportedClosed = false;
             while (clock.Elapsed < TimeSpan.FromSeconds(100))
             {
@@ -91,18 +91,12 @@ internal static class Program
                     return Fail("Could not establish the state of an original Discord process handle.");
                 bool exited = runningStates.All(state => state == 0);
                 // Permit a small scheduling/UIA tolerance around the one-minute deadline.
-                // Before then, both the original processes and the observed set must stay stable.
+                // The original window-owning process must remain alive. Discord can
+                // legitimately replace helper processes during startup and countdown.
                 if (clock.Elapsed < TimeSpan.FromSeconds(58))
                 {
-                    if (runningStates.Any(state => state != WaitTimeout))
-                        return Fail("An original Discord process exited before the timer deadline.");
-                    var current = Process.GetProcessesByName("Discord");
-                    try
-                    {
-                        if (!originalIds.SetEquals(current.Select(p => p.Id)))
-                            return Fail("The Discord process set changed before the timer deadline.");
-                    }
-                    finally { foreach (var p in current) p.Dispose(); }
+                    if (WaitForSingleObject(mainTarget.SafeHandle, 0) != WaitTimeout)
+                        return Fail("The original Discord window process exited before the timer deadline.");
                 }
                 if (reportedClosed && !exited) return Fail("App reported success while an original Discord process was still running.");
                 // Wait at least 10 seconds after the nominal deadline, including the force-close grace period.

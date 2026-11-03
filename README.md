@@ -32,7 +32,7 @@ Forced termination can cause unsaved Discord drafts to be lost. A request to clo
 
 The Windows implementation checks the Stable installation path, a valid Authenticode signature with a matching publisher common name, process owner and session, and retained process handles. This is a practical check: a common name alone does not uniquely prove publisher identity, the file signature is not proof of the loaded image, and a window-target race remains possible. Once a native close operation has begun it cannot be recalled, and may finish after a timeout.
 
-The Windows app is planned for **Windows 11 x64**, with an English and Russian interface, a main window, and a compact tray panel. Its appearance, tray integration, sleep/wake behavior, supported Discord builds, and actual shutdown behavior require interactive Windows validation. The existing macOS app is a separate local prototype and is not included in this repository yet.
+The Windows app targets **Windows 11 x64**, with an English and Russian interface, a main window, and a compact tray panel. Its appearance, tray integration, sleep/wake behavior, supported Discord builds, and actual shutdown behavior require interactive Windows validation. A separate [macOS prototype](macos/README.md) is included.
 
 ## Download
 
