@@ -1,0 +1,46 @@
+# Local planning and project documents
+docs/
+
+# Local agent state and isolated worktrees
+.superpowers/
+.codex/
+.agents/
+.worktrees/
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Build and test outputs
+dist/
+build/
+.build/
+DerivedData/
+**/bin/
+**/obj/
+**/TestResults/
+*.app/
+*.dSYM/
+
+# Local IDE state
+.vs/
+.idea/
+xcuserdata/
+*.xcuserstate
+*.suo
+*.user
+
+# Local environment and signing material
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.key
+*.mobileprovision
+
+# Local Discord-derived assets pending rights review
+**/Resources/DiscordSource.png
+**/Resources/DiscordMark.png
+**/Resources/AppIcon.icns
