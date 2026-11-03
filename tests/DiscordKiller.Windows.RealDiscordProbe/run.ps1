@@ -52,6 +52,12 @@ try {
   # A freshly installed Discord may restart its window process while updating.
   # Let startup settle before the probe retains its original process handles.
   Start-Sleep -Seconds 45
+  $runningPaths = @(Get-Process -Name Discord -ErrorAction SilentlyContinue | ForEach-Object { $_.MainModule.FileName } | Sort-Object -Unique)
+  if ($runningPaths.Count -ne 1) { throw 'Discord processes did not settle on one executable.' }
+  $exe = $runningPaths[0]
+  $allowedRoot = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+  if (-not [IO.Path]::GetFullPath($exe).StartsWith($allowedRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Running Discord path is outside the fresh installation.' }
+  Assert-Signed $exe
   $probe = 'tests/DiscordKiller.Windows.RealDiscordProbe/bin/Release/net10.0-windows/DiscordKiller.Windows.RealDiscordProbe.dll'
   $app = Join-Path $env:RUNNER_TEMP 'discord-killer-e2e/discord-killer.exe'
   dotnet $probe $app $exe
