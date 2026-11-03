@@ -49,7 +49,9 @@ try {
   if (-not $exe) { throw 'Installed Discord executable was not found.' }
   Assert-Signed $exe
   if (@(Get-Process -Name Discord -ErrorAction SilentlyContinue).Count -eq 0) { $null = Start-Isolated $exe '' }
-  Start-Sleep -Seconds 10
+  # A freshly installed Discord may restart its window process while updating.
+  # Let startup settle before the probe retains its original process handles.
+  Start-Sleep -Seconds 45
   $probe = 'tests/DiscordKiller.Windows.RealDiscordProbe/bin/Release/net10.0-windows/DiscordKiller.Windows.RealDiscordProbe.dll'
   $app = Join-Path $env:RUNNER_TEMP 'discord-killer-e2e/discord-killer.exe'
   dotnet $probe $app $exe
