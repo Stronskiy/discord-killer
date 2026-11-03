@@ -11,7 +11,7 @@ Fall asleep in voice chat without leaving Discord running all night.
 </div>
 
 > [!CAUTION]
-> **Early development:** real Discord shutdown is disabled while Windows process identification is being validated. Do not rely on this project to close Discord yet. There is no published Windows release.
+> **Early development:** this branch attempts to close Discord. Real-world behavior is still being validated; do not rely on it to end a call. There is no published Windows release.
 
 ![Design concept showing a timer setup window, countdown, and Windows system tray panel](assets/windows-design-concept.png)
 
@@ -28,7 +28,9 @@ Sometimes you want to fall asleep while friends are still chatting. discord-kill
 3. When time is up, discord-killer will attempt to close Discord normally. If a verified target process is still running after 10 seconds, it may then be forced to quit.
 4. Open the app or tray panel to see the result, or cancel the timer before shutdown begins.
 
-Forced termination can cause unsaved Discord drafts to be lost. A request to close a window does not guarantee that Discord has exited; the intended implementation must confirm the actual process has stopped and report failures.
+Forced termination can cause unsaved Discord drafts to be lost. A request to close a window does not guarantee that Discord has exited; the app checks the original process handles and reports unconfirmed results.
+
+The Windows implementation checks the Stable installation path, a valid Authenticode signature with a matching publisher common name, process owner and session, and retained process handles. This is a practical check: a common name alone does not uniquely prove publisher identity, the file signature is not proof of the loaded image, and a window-target race remains possible. Once a native close operation has begun it cannot be recalled, and may finish after a timeout.
 
 The Windows app is planned for **Windows 11 x64**, with an English and Russian interface, a main window, and a compact tray panel. Its appearance, tray integration, sleep/wake behavior, supported Discord builds, and actual shutdown behavior require interactive Windows validation. The existing macOS app is a separate local prototype and is not included in this repository yet.
 

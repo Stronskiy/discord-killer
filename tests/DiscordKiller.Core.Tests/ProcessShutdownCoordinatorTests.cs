@@ -71,6 +71,7 @@ public sealed class ProcessShutdownCoordinatorTests
         public TaskCompletionSource<bool>? HasExitedGate { get; set; }
         public TaskCompletionSource<bool>? ForceGate { get; set; }
         public bool IgnoreCancellation { get; set; }
+        public bool ForceCommittedBeforeGate { get; set; }
         public TaskCompletionSource<bool> RequestStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool> ForceStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool> VerificationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -111,7 +112,7 @@ public sealed class ProcessShutdownCoordinatorTests
             ForceAt = clock.ElapsedMilliseconds;
             ForceStarted.TrySetResult(true);
             if (ForceGate is not null) await WaitGate(ForceGate, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
+            if (!ForceCommittedBeforeGate) cancellationToken.ThrowIfCancellationRequested();
             if (ForceExits) Exit();
         }
 
@@ -144,6 +145,7 @@ public sealed class ProcessShutdownCoordinatorTests
         public bool ThrowOnFinalScan { get; set; }
         public TaskCompletionSource<bool>? ScanGate { get; set; }
         public bool IgnoreCancellation { get; set; }
+        public bool ForceCommittedBeforeGate { get; set; }
         public TaskCompletionSource<bool> ScanStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ProcessCandidate? NewCandidate { get; set; }
         public int Scans => Volatile.Read(ref _scans);
@@ -520,6 +522,31 @@ public sealed class ProcessShutdownCoordinatorTests
         await Signal(target.Disposed.Task);
         Assert.Equal(1, target.Disposals);
         Assert.False(target.Exited); // A cancelled force may not act later.
+    }
+
+    [Fact]
+    public async Task TimeoutAfterCommittedForceIsUnconfirmedAndRetainsHandleUntilCompletion()
+    {
+        var clock = new ManualClock();
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var target = new FakeTarget(1, clock)
+        {
+            ForceGate = release, IgnoreCancellation = true, ForceCommittedBeforeGate = true
+        };
+        Task<CloseOutcome> result = new ProcessShutdownCoordinator(new FakeCatalog(target), clock, clock)
+            .CloseAsync(CancellationToken.None);
+        await Signal(clock.Registered(10_000));
+        clock.Advance(10_000);
+        await Signal(target.ForceStarted.Task);
+        await Signal(clock.Registered(15_000));
+        clock.Advance(5_000);
+        Assert.NotEqual(CloseOutcome.Closed, await result.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(1, target.Forces);
+        Assert.Equal(0, target.Disposals);
+        release.TrySetResult(true);
+        await Signal(target.Disposed.Task);
+        Assert.True(target.Exited); // A committed native call may finish after the timeout.
+        Assert.Equal(1, target.Forces);
     }
 
     [Fact]

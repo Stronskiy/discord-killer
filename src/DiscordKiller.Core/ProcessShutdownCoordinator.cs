@@ -33,9 +33,9 @@ public interface IProcessCatalog
 
 /// <summary>
 /// One independently verified process instance and its retained handle. All
-/// methods must return promptly and honour cancellation. In particular, a
-/// cancelled RequestCloseAsync or ForceCloseAsync MUST NOT perform a later
-/// side effect. Every asynchronous operation must retain its own safe handle
+/// methods must return promptly and honour cancellation before the commit point.
+/// A committed native side effect cannot be revoked and may finish after timeout;
+/// timeout must not be reported as a confirmed success. Every asynchronous operation must retain its own safe handle
 /// lease until it finishes. Dispose must be idempotent and non-throwing.
 /// A request with no main window completes normally; it is not proof of exit.
 /// Implementations require Windows-specific verification before use.
@@ -58,8 +58,8 @@ public interface IMonotonicDelay
 
 /// <summary>
 /// Testable shutdown policy. No Windows process discovery or termination is
-/// supplied. Real adapters must prove identity and the cancellation, handle
-/// lifetime and no-late-side-effects contract before they may be enabled.
+/// supplied. Real adapters must verify identity, cancellation before commit,
+/// handle lifetime, and disclose that committed native calls cannot be revoked.
 /// </summary>
 public sealed class ProcessShutdownCoordinator : IDiscordCloser
 {

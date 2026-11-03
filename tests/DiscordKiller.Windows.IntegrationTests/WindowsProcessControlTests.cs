@@ -22,6 +22,36 @@ public sealed class WindowsProcessControlTests
     }
 
     [Fact]
+    public void CancellationBeforeCommitPreventsSideEffect()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        bool called = false;
+        Assert.Throws<OperationCanceledException>(() => SideEffectCommit.Run(cancellation.Token, () => called = true));
+        Assert.False(called);
+    }
+
+    [Fact]
+    public async Task CommittedOperationCanFinishAfterCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool finished = false;
+        Task worker = Task.Run(() => SideEffectCommit.Run(cancellation.Token, () =>
+        {
+            entered.TrySetResult(true);
+            release.Task.GetAwaiter().GetResult();
+            finished = true;
+        }));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        release.TrySetResult(true);
+        await worker.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(finished);
+    }
+
+    [Fact]
     public void RefusesToOpenCurrentProcess()
     {
         Assert.True(OperatingSystem.IsWindows());
@@ -122,6 +152,7 @@ public sealed class WindowsProcessControlTests
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             Task<CloseOutcome> operation = coordinator.CloseAsync(cancellation.Token);
             Assert.False(operation.IsCompleted);
+            await timing.RequestSignal.Task.WaitAsync(TimeSpan.FromSeconds(10));
             cancellation.Cancel();
             CloseOutcome outcome = await operation.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -210,9 +241,99 @@ public sealed class WindowsProcessControlTests
         Assert.True(DiscordStableEvidencePolicy.IsStablePath(plausible, root));
         Assert.False(DiscordStableEvidencePolicy.IsStablePath(otherChannel, root));
         var policy = new DiscordStableEvidencePolicy();
-        Assert.False(policy.IsReady);
+        Assert.True(policy.IsReady);
         Assert.False(policy.IsTrusted(new WindowsProcessEvidence(new ProcessIdentity(1, 1), plausible, "sid", 1)));
         Assert.False(DiscordStableEvidencePolicy.InspectFile(plausible, root).RunningImageBindingVerified);
+    }
+
+    [Fact]
+    public void VerifiedSignerMustExactlyMatchDiscordPublisher()
+    {
+        Assert.True(DiscordStableEvidencePolicy.IsAllowedEvidence(new(true, true, "CN=Discord Inc.", "Discord Inc.")));
+        Assert.False(DiscordStableEvidencePolicy.IsAllowedEvidence(new(true, true, "CN=Discord Inc. Fake", "Discord Inc. Fake")));
+        Assert.False(DiscordStableEvidencePolicy.IsAllowedEvidence(new(true, false, "CN=Discord Inc.", "Discord Inc.")));
+        Assert.False(DiscordStableEvidencePolicy.IsAllowedEvidence(new(false, true, "CN=Discord Inc.", "Discord Inc.")));
+    }
+
+    [Fact]
+    public void StablePathRejectsChannelsAndNestedOrUnversionedLocations()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "discord-killer-test-user");
+        Assert.True(DiscordStableEvidencePolicy.IsStablePath(Path.Combine(root, "Discord", "app-1.0.9059", "Discord.exe"), root));
+        Assert.False(DiscordStableEvidencePolicy.IsStablePath(Path.Combine(root, "DiscordPTB", "app-1.0.9059", "Discord.exe"), root));
+        Assert.False(DiscordStableEvidencePolicy.IsStablePath(Path.Combine(root, "Discord", "app-abc", "Discord.exe"), root));
+        Assert.False(DiscordStableEvidencePolicy.IsStablePath(Path.Combine(root, "Discord", "app-1.0.9059", "nested", "Discord.exe"), root));
+        Assert.False(DiscordStableEvidencePolicy.IsStablePath(Path.Combine(root, "Discord", "app-1.0.9059", "Discord-other.exe"), root));
+    }
+
+    [Fact]
+    public void UnsignedFileAtPlausiblePathIsNeverTrusted()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "discord-killer-policy-" + Guid.NewGuid().ToString("N"));
+        string folder = Path.Combine(root, "Discord", "app-1.0.9059");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            string path = Path.Combine(folder, "Discord.exe");
+            File.WriteAllText(path, "not a signed Windows executable");
+            DiscordStableEvidence evidence = DiscordStableEvidencePolicy.InspectFile(path, root);
+            Assert.True(evidence.StablePathMatch);
+            Assert.False(evidence.AuthenticodeValid);
+            Assert.False(evidence.RunningImageBindingVerified);
+            Assert.False(new DiscordStableEvidencePolicy().IsTrusted(
+                new WindowsProcessEvidence(new ProcessIdentity(1, 1), path, "sid", 1)));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void CopiedSystemFileAtPlausiblePathIsNeverTrustedAsDiscord()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "discord-killer-policy-" + Guid.NewGuid().ToString("N"));
+        string folder = Path.Combine(root, "Discord", "app-1.0.9059");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            string source = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "WindowsPowerShell", "v1.0", "powershell.exe");
+            string path = Path.Combine(folder, "Discord.exe");
+            File.Copy(source, path);
+            DiscordStableEvidence evidence = DiscordStableEvidencePolicy.InspectFile(path, root);
+            Assert.True(evidence.StablePathMatch);
+            if (evidence.AuthenticodeValid)
+                Assert.DoesNotContain("Discord Inc", evidence.SignerSubject ?? "", StringComparison.OrdinalIgnoreCase);
+            Assert.False(evidence.RunningImageBindingVerified);
+            Assert.False(new DiscordStableEvidencePolicy().IsTrusted(
+                new WindowsProcessEvidence(new ProcessIdentity(1, 1), path, "sid", 1)));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [DiscordSignedFixtureFact]
+    public void SignedDiscordFixtureReturnsVerifiedProviderSigner()
+    {
+        // A CI job must opt in with a real signed Stable executable from its disposable
+        // runner. No process is started, opened, messaged, or terminated by this test.
+        string fixture = Environment.GetEnvironmentVariable("DISCORD_KILLER_SIGNED_FIXTURE")!;
+        Assert.True(File.Exists(fixture), "DISCORD_KILLER_SIGNED_FIXTURE must point to the signed Discord.exe fixture.");
+        string root = Path.Combine(Path.GetTempPath(), "discord-killer-positive-" + Guid.NewGuid().ToString("N"));
+        string folder = Path.Combine(root, "Discord", "app-1.0.9059");
+        Directory.CreateDirectory(folder);
+        try
+        {
+            string path = Path.Combine(folder, "Discord.exe");
+            File.Copy(fixture, path);
+            DiscordStableEvidence evidence = DiscordStableEvidencePolicy.InspectFile(path, root);
+            Assert.True(evidence.StablePathMatch);
+            Assert.True(evidence.AuthenticodeValid, "WinVerifyTrust or provider signer extraction failed.");
+            Assert.NotNull(evidence.SignerSubject);
+            Assert.True(DiscordStableEvidencePolicy.IsAllowedEvidence(evidence));
+            Assert.True(string.Equals("CN=Discord Inc.", evidence.SignerSubject.Split(',')[0].Trim(),
+                StringComparison.OrdinalIgnoreCase), $"Unexpected verified signer: {evidence.SignerSubject}");
+            Assert.False(evidence.RunningImageBindingVerified);
+            Assert.True(new DiscordStableEvidencePolicy().IsReady);
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     private static Process StartOwnChild()
@@ -267,6 +388,7 @@ public sealed class WindowsProcessControlTests
 
     private sealed class Timing
     {
+        public TaskCompletionSource<bool> RequestSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private long _requestCompleted = -1;
         private long _forceStarted = -1;
         public long? RequestCompleted
@@ -303,6 +425,7 @@ public sealed class WindowsProcessControlTests
         {
             await inner.RequestCloseAsync(token);
             timing.RequestCompleted = clock.ElapsedMilliseconds;
+            timing.RequestSignal.TrySetResult(true);
         }
 
         public async Task ForceCloseAsync(CancellationToken token)
@@ -312,5 +435,15 @@ public sealed class WindowsProcessControlTests
         }
 
         public void Dispose() => inner.Dispose();
+    }
+}
+
+/// <summary>Reports a real skip, rather than passing without exercising a signed fixture.</summary>
+internal sealed class DiscordSignedFixtureFactAttribute : FactAttribute
+{
+    public DiscordSignedFixtureFactAttribute()
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISCORD_KILLER_SIGNED_FIXTURE")))
+            Skip = "Set DISCORD_KILLER_SIGNED_FIXTURE to a signed Discord Stable executable on an isolated Windows runner.";
     }
 }

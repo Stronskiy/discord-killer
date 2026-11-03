@@ -59,8 +59,8 @@ internal sealed class TimerSurface : UserControl
     {
         _root.Margin = new Thickness(_compact ? 20 : 28);
         _root.Orientation = Orientation.Vertical;
-        var preview = Label(Texts.Get("Preview: Discord will not be closed automatically.",
-            "Предварительная версия: Discord автоматически не закроется."), 14);
+        var preview = Label(Texts.Get("Discord may be forced to close after 10 seconds. Unsent drafts may be lost.",
+            "Через 10 секунд Discord может быть закрыт принудительно. Несохранённые сообщения могут быть потеряны."), 14);
         preview.FontWeight = FontWeights.SemiBold;
         preview.TextWrapping = TextWrapping.Wrap;
         preview.Margin = new Thickness(0, 0, 0, 18);
@@ -110,7 +110,7 @@ internal sealed class TimerSurface : UserControl
             presets.Children.Add(button);
         }
         _idle.Children.Add(presets);
-        _start.Content = Texts.Get("Start preview timer", "Запустить тестовый таймер");
+        _start.Content = Texts.Get("Start timer", "Запустить таймер");
         _start.MinHeight = 44;
         _start.IsDefault = true;
         _start.Margin = new Thickness(0, 0, 0, 8);
@@ -198,16 +198,16 @@ internal sealed class TimerSurface : UserControl
         {
             TimerState.Closing => Texts.Get("Checking Discord…", "Проверяем Discord…"),
             TimerState.Completed or TimerState.Error when _controller.Outcome == CloseOutcome.Unverified =>
-                Texts.Get("Discord was not closed. Automatic shutdown is unavailable in this preview.",
-                          "Discord не был закрыт. В этой версии автоматическое закрытие недоступно."),
+                Texts.Get("Could not verify Discord safely. Check its status manually.",
+                          "Не удалось безопасно проверить Discord. Проверьте его состояние вручную."),
             TimerState.Completed when _controller.Outcome == CloseOutcome.AlreadyClosed =>
                 Texts.Get("Discord is already closed.", "Discord уже закрыт."),
             TimerState.Completed when _controller.Outcome == CloseOutcome.Closed =>
                 Texts.Get("Discord is closed.", "Discord закрыт."),
             TimerState.Completed or TimerState.Error =>
                 Texts.Get("Could not confirm that Discord closed. Close it manually.", "Не удалось подтвердить закрытие Discord. Закройте его вручную."),
-            TimerState.Running => Texts.Get("Preview only — Discord will remain open.", "Предварительная версия — Discord останется открытым."),
-            _ => Texts.Get("This preview does not close or change Discord.", "Эта версия не закрывает и не изменяет Discord.")
+            TimerState.Running => Texts.Get("Discord will close when the timer ends.", "Discord закроется по окончании таймера."),
+            _ => Texts.Get("Set a timer to close Discord.", "Установите таймер для закрытия Discord.")
         };
         foreach (var (value, button) in _presets)
         {

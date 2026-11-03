@@ -20,11 +20,7 @@ namespace DiscordKiller.Windows.ProcessControl;
 /// <summary>Evidence for a single retained process handle. Trust must not be based on name or path alone.</summary>
 internal sealed record WindowsProcessEvidence(ProcessIdentity Identity, string ImagePath, string OwnerSid, uint SessionId);
 
-/// <summary>
-/// Implementations must return promptly and require independent verification of running-image
-/// authenticity before production use. Do not call blocking file trust APIs inside IsTrusted:
-/// the coordinator cannot enforce a timeout before a synchronously blocking call returns.
-/// </summary>
+/// <summary>Trust checks can block and must run only on a worker.</summary>
 internal interface IWindowsProcessTrustPolicy
 {
     bool IsReady { get; }
@@ -55,13 +51,8 @@ internal sealed class WindowsElapsedClock : IMonotonicClock, IMonotonicDelay
     }
 }
 
-/// <summary>
-/// Experimental discovery of the stable desktop process name only. Enumerating bare PIDs
-/// cannot establish a snapshot: a PID may be reused before OpenProcess. Production discovery
-/// therefore cannot claim completeness or be connected to a coordinator. Default policy stays
-/// unavailable until snapshot identity and running-image authenticity are verified on Windows.
-/// Failed access or a failed trust decision is reported as an unverified candidate.
-/// </summary>
+/// <summary>Discovers Stable-channel candidates and retains an identity-bound handle per candidate.
+/// Inaccessible or unverifiable candidates make the scan untrusted.</summary>
 internal sealed class WindowsProcessCatalog : IProcessCatalog
 {
     private readonly IWindowsProcessTrustPolicy _policy;
@@ -70,13 +61,9 @@ internal sealed class WindowsProcessCatalog : IProcessCatalog
 
     public WindowsProcessCatalog() : this(new UnverifiedWindowsProcessPolicy()) { }
 
-    public WindowsProcessCatalog(IWindowsProcessTrustPolicy policy) : this(policy, EnumerateDiscordIds, false) { }
+    public WindowsProcessCatalog(IWindowsProcessTrustPolicy policy) : this(policy, EnumerateDiscordIds, true) { }
 
-    /// <summary>
-    /// Test-only injection: a true completeness flag is valid only for a controlled fixture
-    /// whose policy binds every candidate to its original retained handle and creation time.
-    /// Never set true for the production bare-PID enumerator.
-    /// </summary>
+    /// <summary>Injected enumeration is used by controlled child-process tests.</summary>
     internal WindowsProcessCatalog(IWindowsProcessTrustPolicy policy, Func<IEnumerable<int>> enumerateIds, bool enumerationCompletenessProven)
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
@@ -84,11 +71,13 @@ internal sealed class WindowsProcessCatalog : IProcessCatalog
         _enumerationCompletenessProven = enumerationCompletenessProven;
     }
 
-    public Task<ProcessScan> ScanAsync(CancellationToken cancellationToken)
+    public Task<ProcessScan> ScanAsync(CancellationToken cancellationToken) => Task.Run(() => Scan(cancellationToken));
+
+    private ProcessScan Scan(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!_policy.IsReady)
-            return Task.FromResult(new ProcessScan(false, Array.Empty<ProcessCandidate>()));
+            return new ProcessScan(false, Array.Empty<ProcessCandidate>());
 
         var candidates = new List<ProcessCandidate>();
         try
@@ -114,11 +103,7 @@ internal sealed class WindowsProcessCatalog : IProcessCatalog
                 }
                 finally { target?.Dispose(); }
             }
-            // Bare PID enumeration also cannot prevent reuse before OpenProcess, and
-            // GetProcessesByName("Discord") does not prove that no other Discord
-            // channel, inaccessible process or undiscovered variant is running.
-            // Only injected test enumerators claim completeness in this prototype.
-            return Task.FromResult(new ProcessScan(_enumerationCompletenessProven, candidates));
+            return new ProcessScan(_enumerationCompletenessProven, candidates);
         }
         catch
         {
@@ -135,15 +120,8 @@ internal sealed class WindowsProcessCatalog : IProcessCatalog
     }
 }
 
-/// <summary>
-/// Uses the originally opened OS handle for termination and exit checks. This is a primitive,
-/// not proof of Discord identity. Calls must never be enabled for real Discord until a policy
-/// has been independently verified. Only processes in the caller's user and session are eligible.
-/// This experimental primitive is NOT safe to wire to ProcessShutdownCoordinator in production: these
-/// synchronous Win32 operations run before returning a Task, so coordinator deadlines cannot
-/// preempt them; cancellation can race the OS calls and a late effect cannot be excluded.
-/// Isolated integration tests may exercise it against their own retained child process only.
-/// </summary>
+/// <summary>Uses retained handles for identity, exit checks and termination.
+/// An already committed native call cannot be cancelled; HWND checks and posting are not atomic.</summary>
 internal sealed class WindowsProcessTarget : IProcessTarget
 {
     private readonly SafeProcessHandle _handle;
@@ -172,57 +150,66 @@ internal sealed class WindowsProcessTarget : IProcessTarget
         catch { handle.Dispose(); throw; }
     }
 
-    public Task<bool> VerifyIdentityAsync(CancellationToken cancellationToken)
+    public Task<bool> VerifyIdentityAsync(CancellationToken cancellationToken) => Task.Run(() => VerifyIdentity(cancellationToken));
+
+    private bool VerifyIdentity(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        if (!_policy.IsReady || Native.HasExited(_handle)) return Task.FromResult(false);
-        if (Native.ReadStartTicks(_handle) != Identity.StartTimeUtcTicks) return Task.FromResult(false);
+        if (!_policy.IsReady || Native.HasExited(_handle)) return false;
+        if (Native.ReadStartTicks(_handle) != Identity.StartTimeUtcTicks) return false;
         if (!Native.ProcessIdToSessionId((uint)Identity.ProcessId, out uint session) ||
             !Native.ProcessIdToSessionId((uint)Environment.ProcessId, out uint currentSession))
             throw new Win32Exception(Marshal.GetLastWin32Error());
-        if (session != currentSession) return Task.FromResult(false);
+        if (session != currentSession) return false;
         string owner = Native.ReadOwnerSid(_handle);
         using var currentIdentity = WindowsIdentity.GetCurrent();
         string currentOwner = currentIdentity.User?.Value ?? "";
         if (string.IsNullOrEmpty(currentOwner) || !string.Equals(owner, currentOwner, StringComparison.Ordinal))
-            return Task.FromResult(false);
+            return false;
         string path = Native.ReadImagePath(_handle);
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(_policy.IsTrusted(new WindowsProcessEvidence(Identity, path, owner, session)));
+        return _policy.IsTrusted(new WindowsProcessEvidence(Identity, path, owner, session));
     }
 
-    public Task<bool> HasExitedAsync(CancellationToken cancellationToken)
+    public Task<bool> HasExitedAsync(CancellationToken cancellationToken) => Task.Run(() => HasExited(cancellationToken));
+
+    private bool HasExited(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfDisposed();
-        return Task.FromResult(Native.HasExited(_handle));
+        return Native.HasExited(_handle);
     }
 
-    public Task RequestCloseAsync(CancellationToken cancellationToken)
+    public Task RequestCloseAsync(CancellationToken cancellationToken) => Task.Run(() => RequestClose(cancellationToken));
+
+    private void RequestClose(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!VerifyIdentityAsync(cancellationToken).GetAwaiter().GetResult()) throw new UnauthorizedAccessException("Target identity not verified.");
-        // Experimental only: HWND/PID verification and PostMessage are not atomic; window
-        // or PID reuse can race this call. Never enable this path for real Discord as-is.
+        if (!VerifyIdentity(cancellationToken)) throw new UnauthorizedAccessException("Target identity not verified.");
+        // HWND/PID verification and PostMessage are not atomic.
         using Process process = Process.GetProcessById(Identity.ProcessId);
         process.Refresh();
         IntPtr hwnd = process.MainWindowHandle;
-        if (hwnd == IntPtr.Zero) return Task.CompletedTask;
+        if (hwnd == IntPtr.Zero) return;
         Native.GetWindowThreadProcessId(hwnd, out uint windowPid);
         if (windowPid != Identity.ProcessId || Native.HasExited(_handle)) throw new UnauthorizedAccessException("Window target changed.");
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!Native.PostMessage(hwnd, Native.WmClose, IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
-        return Task.CompletedTask;
+        SideEffectCommit.Run(cancellationToken, () =>
+        {
+            if (!Native.PostMessage(hwnd, Native.WmClose, IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        });
     }
 
-    public Task ForceCloseAsync(CancellationToken cancellationToken)
+    public Task ForceCloseAsync(CancellationToken cancellationToken) => Task.Run(() => ForceClose(cancellationToken));
+
+    private void ForceClose(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!VerifyIdentityAsync(cancellationToken).GetAwaiter().GetResult()) throw new UnauthorizedAccessException("Target identity not verified.");
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!Native.TerminateProcess(_handle, 1)) throw new Win32Exception(Marshal.GetLastWin32Error());
-        return Task.CompletedTask;
+        if (!VerifyIdentity(cancellationToken)) throw new UnauthorizedAccessException("Target identity not verified.");
+        SideEffectCommit.Run(cancellationToken, () =>
+        {
+            if (!Native.TerminateProcess(_handle, 1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        });
     }
 
     public async Task WaitForExitAsync(CancellationToken cancellationToken)
@@ -244,6 +231,17 @@ internal sealed class WindowsProcessTarget : IProcessTarget
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    }
+}
+
+/// <summary>The last cancellation check is the point of commitment. Once this method
+/// begins the supplied native operation, cancellation cannot revoke the OS call.</summary>
+internal static class SideEffectCommit
+{
+    public static void Run(CancellationToken cancellationToken, Action action)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        action();
     }
 }
 

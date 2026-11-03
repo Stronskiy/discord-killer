@@ -7,26 +7,34 @@ using System.Security.Cryptography.X509Certificates;
 namespace DiscordKiller.Windows.ProcessControl;
 
 /// <summary>Diagnostic facts about the on-disk file only. These do not establish the identity of a running image.</summary>
-internal sealed record DiscordStableEvidence(bool StablePathMatch, bool AuthenticodeValid, string? SignerSubject)
+internal sealed record DiscordStableEvidence(bool StablePathMatch, bool AuthenticodeValid, string? SignerSubject, string? SignerCommonName = null)
 {
     public bool RunningImageBindingVerified => false;
 }
 
 /// <summary>
-/// Evidence-gathering policy, intentionally unusable for process authorization.
+/// Practical stable-channel policy using the validated Authenticode provider signer.
 /// Verifying a file by its pathname does not bind that file to an already-running
 /// process image, and a matching certificate subject alone is not publisher proof.
-/// Do not enable until running-image binding and signer policy have been audited.
+/// The loaded-image binding limitation remains; callers also verify owner, session and handle identity.
 /// </summary>
 internal sealed class DiscordStableEvidencePolicy : IWindowsProcessTrustPolicy
 {
-    public bool IsReady => false;
-    public bool IsTrusted(WindowsProcessEvidence evidence) => false;
+    public bool IsReady => true;
+    public bool IsTrusted(WindowsProcessEvidence evidence)
+    {
+        var facts = InspectFile(evidence.ImagePath, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+        return IsAllowedEvidence(facts);
+    }
+
+    internal static bool IsAllowedEvidence(DiscordStableEvidence facts) =>
+        facts.StablePathMatch && facts.AuthenticodeValid &&
+        string.Equals(facts.SignerCommonName, "Discord Inc.", StringComparison.Ordinal);
 
     /// <summary>
     /// Read only on-disk diagnostic evidence. Caller must not execute on the UI thread:
     /// WinVerifyTrust and the certificate provider are system operations which may block.
-    /// No result from this method grants permission to terminate a process.
+    /// The caller additionally verifies process owner, session and handle identity.
     /// </summary>
     public static DiscordStableEvidence InspectFile(string path, string localAppData)
     {
@@ -35,14 +43,8 @@ internal sealed class DiscordStableEvidencePolicy : IWindowsProcessTrustPolicy
         try
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            bool valid = Signature.Verify(path, stream.SafeFileHandle.DangerousGetHandle());
-            if (!valid) return new DiscordStableEvidence(true, false, null);
-            // This legacy API extracts the embedded signer from a signed PE;
-            // X509CertificateLoader reads certificate containers rather than PE signatures.
-#pragma warning disable SYSLIB0057
-            using X509Certificate certificate = X509Certificate.CreateFromSignedFile(path);
-#pragma warning restore SYSLIB0057
-            return new DiscordStableEvidence(true, true, certificate.Subject);
+            (bool valid, string? subject, string? commonName) = Signature.Verify(path, stream.SafeFileHandle.DangerousGetHandle());
+            return new DiscordStableEvidence(true, valid, subject, commonName);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
                                           CryptographicException or ArgumentException or System.ComponentModel.Win32Exception)
@@ -74,7 +76,7 @@ internal sealed class DiscordStableEvidencePolicy : IWindowsProcessTrustPolicy
     {
         private static readonly Guid VerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
 
-        internal static bool Verify(string path, IntPtr fileHandle)
+        internal static (bool Valid, string? Subject, string? CommonName) Verify(string path, IntPtr fileHandle)
         {
             IntPtr pathPtr = Marshal.StringToCoTaskMemUni(path);
             IntPtr infoPtr = IntPtr.Zero;
@@ -96,17 +98,46 @@ internal sealed class DiscordStableEvidencePolicy : IWindowsProcessTrustPolicy
                     RevocationChecks = 0, // WTD_REVOKE_NONE
                     UnionChoice = 1, // WTD_CHOICE_FILE
                     FileInfo = infoPtr,
-                    StateAction = 0, // WTD_STATEACTION_IGNORE
+                    StateAction = 1, // WTD_STATEACTION_VERIFY; keep the provider state until inspected
                     ProviderFlags = 0x1000 // WTD_CACHE_ONLY_URL_RETRIEVAL
                 };
                 Guid action = VerifyV2;
-                return WinVerifyTrust(new IntPtr(-1), ref action, ref data) == 0;
+                try
+                {
+                    if (WinVerifyTrust(new IntPtr(-1), ref action, ref data) != 0 || data.StateData == IntPtr.Zero)
+                        return (false, null, null);
+                    IntPtr provider = WTHelperProvDataFromStateData(data.StateData);
+                    if (provider == IntPtr.Zero) return (false, null, null);
+                    IntPtr signer = WTHelperGetProvSignerFromChain(provider, 0, false, 0);
+                    if (signer == IntPtr.Zero) return (false, null, null);
+                    IntPtr cert = WTHelperGetProvCertFromChain(signer, 0);
+                    if (cert == IntPtr.Zero) return (false, null, null);
+                    var providerCert = Marshal.PtrToStructure<CryptProviderCertPrefix>(cert);
+                    if (providerCert.CertificateContext == IntPtr.Zero) return (false, null, null);
+                    // Duplicate the verified provider's leaf certificate while its state is alive.
+#pragma warning disable SYSLIB0057
+                    using var certificate = new X509Certificate2(providerCert.CertificateContext);
+#pragma warning restore SYSLIB0057
+                    return (true, certificate.Subject, certificate.GetNameInfo(X509NameType.SimpleName, false));
+                }
+                finally
+                {
+                    data.StateAction = 2; // WTD_STATEACTION_CLOSE
+                    WinVerifyTrust(new IntPtr(-1), ref action, ref data);
+                }
             }
             finally
             {
                 if (infoPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(infoPtr);
                 Marshal.FreeCoTaskMem(pathPtr);
             }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CryptProviderCertPrefix
+        {
+            public uint Size;
+            public IntPtr CertificateContext;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -138,5 +169,15 @@ internal sealed class DiscordStableEvidencePolicy : IWindowsProcessTrustPolicy
 
         [DllImport("wintrust.dll", ExactSpelling = true, SetLastError = true)]
         private static extern int WinVerifyTrust(IntPtr hwnd, ref Guid action, ref WinTrustData data);
+
+        [DllImport("wintrust.dll", ExactSpelling = true)]
+        private static extern IntPtr WTHelperProvDataFromStateData(IntPtr stateData);
+
+        [DllImport("wintrust.dll", ExactSpelling = true)]
+        private static extern IntPtr WTHelperGetProvSignerFromChain(IntPtr providerData, uint signerIndex,
+            [MarshalAs(UnmanagedType.Bool)] bool counterSigner, uint counterSignerIndex);
+
+        [DllImport("wintrust.dll", ExactSpelling = true)]
+        private static extern IntPtr WTHelperGetProvCertFromChain(IntPtr signer, uint certIndex);
     }
 }

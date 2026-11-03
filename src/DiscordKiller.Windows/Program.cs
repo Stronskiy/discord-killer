@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
@@ -10,24 +9,11 @@ using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using DiscordKiller.Core;
+using DiscordKiller.Windows.ProcessControl;
 using Microsoft.Win32;
 using Forms = System.Windows.Forms;
 
 namespace DiscordKiller.Windows;
-
-internal sealed class WindowsClock : IMonotonicClock
-{
-    [DllImport("kernel32.dll")]
-    private static extern ulong GetTickCount64();
-    public long ElapsedMilliseconds => checked((long)GetTickCount64());
-}
-
-// No trusted Discord identity policy has been verified on Windows yet.
-internal sealed class UnverifiedDiscordCloser : IDiscordCloser
-{
-    public Task<CloseOutcome> CloseAsync(CancellationToken cancellationToken) =>
-        Task.FromResult(CloseOutcome.Unverified);
-}
 
 internal sealed class Program : Application
 {
@@ -64,7 +50,9 @@ internal sealed class Program : Application
         _activationWait = ThreadPool.RegisterWaitForSingleObject(_activation, (_, _) =>
             Dispatcher.BeginInvoke(new Action(ShowMain)), null, Timeout.Infinite, false);
 
-        _controller = new TimerController(new WindowsClock(), new UnverifiedDiscordCloser());
+        var clock = new WindowsElapsedClock();
+        _controller = new TimerController(clock, new ProcessShutdownCoordinator(
+            new WindowsProcessCatalog(new DiscordStableEvidencePolicy()), clock, clock));
         _controller.Changed += ControllerChanged;
         _main = new MainWindow(_controller, RequestExit);
         _main.Closing += (_, args) =>
