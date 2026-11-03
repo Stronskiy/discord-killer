@@ -1,0 +1,116 @@
+name: Windows build and tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-build-and-tests:
+    name: Windows build and tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: true
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore timer core
+        run: dotnet restore src/DiscordKiller.Core/DiscordKiller.Core.csproj
+
+      - name: Build timer core
+        run: dotnet build src/DiscordKiller.Core/DiscordKiller.Core.csproj --configuration Release --no-restore
+
+      - name: Restore core tests
+        run: dotnet restore tests/DiscordKiller.Core.Tests/DiscordKiller.Core.Tests.csproj
+
+      - name: Run core tests
+        run: dotnet test tests/DiscordKiller.Core.Tests/DiscordKiller.Core.Tests.csproj --configuration Release --no-restore --logger 'trx;LogFileName=core-tests.trx' --results-directory "$env:RUNNER_TEMP/core-test-results"
+
+      - name: Upload test report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-core-tests-${{ github.sha }}
+          path: ${{ runner.temp }}/core-test-results/*.trx
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Run Windows process integration tests
+        run: dotnet test tests/DiscordKiller.Windows.IntegrationTests/DiscordKiller.Windows.IntegrationTests.csproj --configuration Release --logger 'trx;LogFileName=windows-integration.trx' --results-directory "$env:RUNNER_TEMP/windows-test-results"
+
+      - name: Upload Windows integration report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-integration-tests-${{ github.sha }}
+          path: ${{ runner.temp }}/windows-test-results/*.trx
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Restore Windows app for publication
+        run: dotnet restore src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --runtime win-x64
+
+      - name: Build Windows app
+        run: dotnet build src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --configuration Release --runtime win-x64 --no-restore
+
+      - name: Publish self-contained Windows app
+        run: dotnet publish src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --configuration Release --runtime win-x64 --self-contained true --no-restore --output "$env:RUNNER_TEMP/discord-killer-win-x64"
+
+      - name: Build Windows UI smoke harness
+        run: dotnet build tests/DiscordKiller.Windows.Smoke/DiscordKiller.Windows.Smoke.csproj --configuration Release
+
+      - name: Exercise window and timer through UI Automation
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          dotnet tests/DiscordKiller.Windows.Smoke/bin/Release/net10.0-windows/DiscordKiller.Windows.Smoke.dll "$env:RUNNER_TEMP/discord-killer-win-x64/discord-killer.exe"
+          $smokeExit = $LASTEXITCODE
+          if ($smokeExit -eq 2) {
+            Write-Warning 'UNVERIFIED: interactive desktop was unavailable; UI smoke did not run.'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'UI smoke: **UNVERIFIED** (interactive desktop unavailable).'
+            exit 0
+          }
+          if ($smokeExit -ne 0) { throw "UI smoke failed with exit code $smokeExit" }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'UI smoke: **PASS** for window, validation, countdown and cancellation.'
+
+      - name: Package and record provenance
+        shell: pwsh
+        run: |
+          $sourceSha = (git rev-parse HEAD).Trim()
+          if ($sourceSha -ne $env:GITHUB_SHA) {
+            throw "Checkout SHA does not match the GitHub event SHA."
+          }
+          $publishDir = Join-Path $env:RUNNER_TEMP 'discord-killer-win-x64'
+          if (-not (Test-Path -Path (Join-Path $publishDir 'discord-killer.exe') -PathType Leaf)) {
+            throw 'Published output is missing discord-killer.exe.'
+          }
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'discord-killer-artifacts'
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          $zipFile = Join-Path $artifactDir 'discord-killer-win-x64.zip'
+          Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zipFile
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $zipFile).Hash.ToLowerInvariant()
+          Set-Content -Encoding ascii -Path (Join-Path $artifactDir 'SHA256SUMS.txt') -Value "$hash  discord-killer-win-x64.zip"
+          Set-Content -Encoding ascii -Path (Join-Path $artifactDir 'SOURCE_SHA.txt') -Value $sourceSha
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: discord-killer-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/discord-killer-artifacts/
+          if-no-files-found: error
+          retention-days: 14

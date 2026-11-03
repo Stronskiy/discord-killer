@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ApplicationIcon>Assets/app.ico</ApplicationIcon>
+    <AssemblyName>discord-killer</AssemblyName>
+    <RootNamespace>DiscordKiller.Windows</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets/app.ico" />
+    <ProjectReference Include="../DiscordKiller.Core/DiscordKiller.Core.csproj" />
+  </ItemGroup>
+</Project>
