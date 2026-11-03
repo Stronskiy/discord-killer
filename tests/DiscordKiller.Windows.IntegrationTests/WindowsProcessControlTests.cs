@@ -76,6 +76,67 @@ public sealed class WindowsProcessControlTests
     }
 
     [Fact]
+    public async Task CoordinatorWaitsTenSecondsAndTerminatesOnlyItsOwnChild()
+    {
+        using var child = StartOwnChild();
+        try
+        {
+            // Test-only trust is bound to Process.Start's retained handle, PID, and creation time.
+            // This proves only the controlled fixture path, not the production cancellation contract.
+            var policy = new TestPolicy(child);
+            SafeProcessHandle originalHandle = child.SafeHandle;
+            int originalPid = child.Id;
+            var catalog = new WindowsProcessCatalog(policy,
+                () => WaitForSingleObject(originalHandle, 0) == 0x102 ? new[] { originalPid } : Array.Empty<int>(), true);
+            var clock = new WindowsElapsedClock();
+            var timing = new Timing();
+            var coordinator = new ProcessShutdownCoordinator(new TimingCatalog(catalog, clock, timing), clock, clock);
+            long started = clock.ElapsedMilliseconds;
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            CloseOutcome outcome = await coordinator.CloseAsync(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(35));
+
+            Assert.Equal(CloseOutcome.Closed, outcome);
+            Assert.True(clock.ElapsedMilliseconds - started >= ProcessShutdownCoordinator.GracePeriodMilliseconds);
+            Assert.True(timing.RequestCompleted.HasValue && timing.ForceStarted.HasValue);
+            Assert.True(timing.ForceStarted!.Value - timing.RequestCompleted!.Value >= ProcessShutdownCoordinator.GracePeriodMilliseconds);
+            Assert.Equal(0u, WaitForSingleObject(originalHandle, 0));
+        }
+        finally { StopOwnChild(child); }
+    }
+
+    [Fact]
+    public async Task CoordinatorCancellationLeavesItsOwnChildRunning()
+    {
+        using var child = StartOwnChild();
+        try
+        {
+            var policy = new TestPolicy(child);
+            SafeProcessHandle originalHandle = child.SafeHandle;
+            int originalPid = child.Id;
+            var catalog = new WindowsProcessCatalog(policy,
+                () => WaitForSingleObject(originalHandle, 0) == 0x102 ? new[] { originalPid } : Array.Empty<int>(), true);
+            var clock = new WindowsElapsedClock();
+            var timing = new Timing();
+            var coordinator = new ProcessShutdownCoordinator(new TimingCatalog(catalog, clock, timing), clock, clock);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            Task<CloseOutcome> operation = coordinator.CloseAsync(cancellation.Token);
+            Assert.False(operation.IsCompleted);
+            cancellation.Cancel();
+            CloseOutcome outcome = await operation.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(CloseOutcome.Error, outcome);
+            Assert.Equal(0x102u, WaitForSingleObject(originalHandle, 0));
+            Assert.True(timing.RequestCompleted.HasValue);
+            await clock.WaitUntilAsync(timing.RequestCompleted!.Value + ProcessShutdownCoordinator.GracePeriodMilliseconds + 1_000,
+                CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(20));
+            Assert.Null(timing.ForceStarted);
+            Assert.Equal(0x102u, WaitForSingleObject(originalHandle, 0));
+        }
+        finally { StopOwnChild(child); }
+    }
+
+    [Fact]
     public async Task UntrustedCandidateIsExplicitlyReported()
     {
         using var child = StartOwnChild();
@@ -202,5 +263,54 @@ public sealed class WindowsProcessControlTests
         public bool IsTrusted(WindowsProcessEvidence evidence) =>
             _allow && WaitForSingleObject(_originalHandle, 0) == 0x102 &&
             evidence.Identity.ProcessId == _pid && evidence.Identity.StartTimeUtcTicks == _startTicks;
+    }
+
+    private sealed class Timing
+    {
+        private long _requestCompleted = -1;
+        private long _forceStarted = -1;
+        public long? RequestCompleted
+        {
+            get { long value = Volatile.Read(ref _requestCompleted); return value < 0 ? null : value; }
+            set => Interlocked.Exchange(ref _requestCompleted, value ?? -1);
+        }
+        public long? ForceStarted
+        {
+            get { long value = Volatile.Read(ref _forceStarted); return value < 0 ? null : value; }
+            set => Interlocked.Exchange(ref _forceStarted, value ?? -1);
+        }
+    }
+
+    private sealed class TimingCatalog(IProcessCatalog inner, IMonotonicClock clock, Timing timing) : IProcessCatalog
+    {
+        public async Task<ProcessScan> ScanAsync(CancellationToken cancellationToken)
+        {
+            ProcessScan scan = await inner.ScanAsync(cancellationToken);
+            return new ProcessScan(scan.Complete, scan.Candidates.Select(candidate =>
+                candidate.VerifiedTarget is null ? candidate :
+                new ProcessCandidate(candidate.Identity, new TimingTarget(candidate.VerifiedTarget, clock, timing))).ToArray());
+        }
+    }
+
+    private sealed class TimingTarget(IProcessTarget inner, IMonotonicClock clock, Timing timing) : IProcessTarget
+    {
+        public ProcessIdentity Identity => inner.Identity;
+        public Task<bool> VerifyIdentityAsync(CancellationToken token) => inner.VerifyIdentityAsync(token);
+        public Task<bool> HasExitedAsync(CancellationToken token) => inner.HasExitedAsync(token);
+        public Task WaitForExitAsync(CancellationToken token) => inner.WaitForExitAsync(token);
+
+        public async Task RequestCloseAsync(CancellationToken token)
+        {
+            await inner.RequestCloseAsync(token);
+            timing.RequestCompleted = clock.ElapsedMilliseconds;
+        }
+
+        public async Task ForceCloseAsync(CancellationToken token)
+        {
+            timing.ForceStarted = clock.ElapsedMilliseconds;
+            await inner.ForceCloseAsync(token);
+        }
+
+        public void Dispose() => inner.Dispose();
     }
 }

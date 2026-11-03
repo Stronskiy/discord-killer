@@ -139,9 +139,10 @@ internal sealed class WindowsProcessCatalog : IProcessCatalog
 /// Uses the originally opened OS handle for termination and exit checks. This is a primitive,
 /// not proof of Discord identity. Calls must never be enabled for real Discord until a policy
 /// has been independently verified. Only processes in the caller's user and session are eligible.
-/// This experimental primitive is NOT safe to wire to ProcessShutdownCoordinator: these
+/// This experimental primitive is NOT safe to wire to ProcessShutdownCoordinator in production: these
 /// synchronous Win32 operations run before returning a Task, so coordinator deadlines cannot
 /// preempt them; cancellation can race the OS calls and a late effect cannot be excluded.
+/// Isolated integration tests may exercise it against their own retained child process only.
 /// </summary>
 internal sealed class WindowsProcessTarget : IProcessTarget
 {
