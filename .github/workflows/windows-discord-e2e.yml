@@ -13,7 +13,8 @@ jobs:
     # A new commit invalidates the old label, including on synchronize.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref == 'feat/windows-mvp' &&
+      (github.event.pull_request.head.ref == 'feat/windows-mvp' ||
+       github.event.pull_request.head.ref == 'feat/windows-ui-refresh') &&
       github.event.pull_request.base.ref == 'main' &&
       contains(github.event.pull_request.labels.*.name, format('e2e-{0}', github.event.pull_request.head.sha))
     runs-on: windows-latest

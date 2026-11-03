@@ -77,6 +77,8 @@ jobs:
       - name: Exercise window and timer through UI Automation
         timeout-minutes: 2
         shell: pwsh
+        env:
+          DISCORD_KILLER_CAPTURE_HOSTED_UI: '1'
         run: |
           dotnet tests/DiscordKiller.Windows.Smoke/bin/Release/net10.0-windows/DiscordKiller.Windows.Smoke.dll "$env:RUNNER_TEMP/discord-killer-win-x64/discord-killer.exe"
           $smokeExit = $LASTEXITCODE
@@ -87,6 +89,15 @@ jobs:
           }
           if ($smokeExit -ne 0) { throw "UI smoke failed with exit code $smokeExit" }
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'UI smoke: **PASS** for window, validation, countdown and cancellation.'
+
+      - name: Upload hosted UI captures when available
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-ui-smoke-${{ github.sha }}
+          path: ${{ runner.temp }}/discord-killer-ui-smoke/*.png
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Package and record provenance
         shell: pwsh
