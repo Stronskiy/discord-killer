@@ -59,6 +59,23 @@ jobs:
       - name: Publish self-contained Windows app
         run: dotnet publish src/DiscordKiller.Windows/DiscordKiller.Windows.csproj --configuration Release --runtime win-x64 --self-contained true --no-restore --output "$env:RUNNER_TEMP/discord-killer-win-x64"
 
+      - name: Build Windows UI smoke harness
+        run: dotnet build tests/DiscordKiller.Windows.Smoke/DiscordKiller.Windows.Smoke.csproj --configuration Release
+
+      - name: Exercise window and timer through UI Automation
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          dotnet tests/DiscordKiller.Windows.Smoke/bin/Release/net10.0-windows/DiscordKiller.Windows.Smoke.dll "$env:RUNNER_TEMP/discord-killer-win-x64/discord-killer.exe"
+          $smokeExit = $LASTEXITCODE
+          if ($smokeExit -eq 2) {
+            Write-Warning 'UNVERIFIED: interactive desktop was unavailable; UI smoke did not run.'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'UI smoke: **UNVERIFIED** (interactive desktop unavailable).'
+            exit 0
+          }
+          if ($smokeExit -ne 0) { throw "UI smoke failed with exit code $smokeExit" }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'UI smoke: **PASS** for window, validation, countdown and cancellation.'
+
       - name: Package and record provenance
         shell: pwsh
         run: |
