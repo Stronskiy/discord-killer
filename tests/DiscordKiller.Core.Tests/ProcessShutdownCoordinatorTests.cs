@@ -380,6 +380,28 @@ public sealed class ProcessShutdownCoordinatorTests
     }
 
     [Fact]
+    public async Task SynchronousAdapterCancellingOuterTokenCannotReturnSuccessfulValue()
+    {
+        var clock = new ManualClock();
+        var coordinator = new ProcessShutdownCoordinator(new FakeCatalog(), clock, clock);
+        using var cancellation = new CancellationTokenSource();
+        Type leaseType = typeof(ProcessShutdownCoordinator).GetNestedType(
+            "LeaseRegistry", System.Reflection.BindingFlags.NonPublic)!;
+        object leases = Activator.CreateInstance(leaseType, nonPublic: true)!;
+        var method = typeof(ProcessShutdownCoordinator).GetMethod(
+            "BoundedAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .MakeGenericMethod(typeof(bool));
+        Func<CancellationToken, Task<bool>> adapter = _ =>
+        {
+            cancellation.Cancel();
+            return Task.FromResult(true);
+        };
+
+        var result = (Task<bool>)method.Invoke(coordinator, [adapter, leases, cancellation.Token])!;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => result);
+    }
+
+    [Fact]
     public async Task VerificationCompletingAfterTimeoutCannotAuthorizeClose()
     {
         var clock = new ManualClock();

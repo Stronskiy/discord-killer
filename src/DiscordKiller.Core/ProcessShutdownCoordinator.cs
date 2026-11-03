@@ -193,6 +193,7 @@ public sealed class ProcessShutdownCoordinator : IDiscordCloser
             leases.Track(operation);
             if (operation.IsCompleted)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (_clock.ElapsedMilliseconds >= deadline)
                     throw new TimeoutException("The process adapter completed at or after its deadline.");
                 return await operation.ConfigureAwait(false);
