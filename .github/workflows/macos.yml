@@ -21,3 +21,13 @@ jobs:
           codesign --verify --deep --strict 'macos/dist/Discord Timer.app'
           plutil -lint 'macos/dist/Discord Timer.app/Contents/Info.plist'
           unzip -t 'macos/dist/Discord Timer.zip'
+      - name: Install pinned DMG build dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmg-venv"
+          "$RUNNER_TEMP/dmg-venv/bin/pip" install -r macos/Packaging/requirements.txt
+      - name: Build and verify drag-to-Applications DMG
+        env:
+          DISCORD_DMG_PYTHON: ${{ runner.temp }}/dmg-venv/bin/python
+        run: |
+          bash macos/Scripts/build-dmg.sh
+          bash macos/Scripts/test-dmg.sh
