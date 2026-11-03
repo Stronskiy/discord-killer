@@ -9,7 +9,9 @@ Requires Apple Silicon, Xcode with the macOS 26 SDK, and macOS 13 or later to ru
 ```sh
 bash macos/Scripts/test.sh
 bash macos/Scripts/build-app.sh
-python3 -m pip install -r macos/Packaging/requirements.txt
+python3 -m venv "${TMPDIR:-/tmp}/discord-dmg-venv"
+"${TMPDIR:-/tmp}/discord-dmg-venv/bin/pip" install -r macos/Packaging/requirements.txt
+export DISCORD_DMG_PYTHON="${TMPDIR:-/tmp}/discord-dmg-venv/bin/python"
 bash macos/Scripts/build-dmg.sh
 bash macos/Scripts/test-dmg.sh
 ```
