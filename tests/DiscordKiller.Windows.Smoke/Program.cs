@@ -107,6 +107,24 @@ internal static class Program
                 return start is not null && !start.Current.IsEnabled ? start : null;
             });
 
+            value.SetValue("720");
+            WaitFor("start enabled at the maximum duration", TimeSpan.FromSeconds(5), () =>
+            {
+                var start = FindStart(window);
+                return start is not null && start.Current.IsEnabled ? start : null;
+            });
+            value.SetValue("721");
+            WaitFor("start disabled above the maximum duration", TimeSpan.FromSeconds(5), () =>
+            {
+                var start = FindStart(window);
+                return start is not null && !start.Current.IsEnabled ? start : null;
+            });
+            var preset = WaitFor("45 minute preset", TimeSpan.FromSeconds(5), () => Find(window, ControlType.Button,
+                "45 minutes", "45 минут"));
+            ((InvokePattern)preset.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            WaitFor("preset updates editable duration", TimeSpan.FromSeconds(5), () =>
+                value.Current.Value == "45" ? input : null);
+
             value.SetValue("1");
             var startButton = WaitFor("start enabled for one minute", TimeSpan.FromSeconds(5), () =>
             {
@@ -155,7 +173,7 @@ internal static class Program
                 var start = FindStart(window);
                 return start is not null && start.Current.IsEnabled && !start.Current.IsOffscreen ? start : null;
             });
-            Console.WriteLine("PASS: window, validation, one-minute start, countdown and cancellation.");
+            Console.WriteLine("PASS: window, duration boundaries, preset synchronization, one-minute start, countdown and cancellation.");
             return 0;
         }
         catch (Exception ex)
