@@ -11,13 +11,13 @@ struct TimerCountdownRing: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(accent.opacity(0.12), lineWidth: compact ? 5 : 7)
+                .stroke(accent.opacity(0.16), lineWidth: compact ? 7 : 10)
 
             Circle()
                 .trim(from: 0, to: controller.isRunning ? controller.progress : 1)
                 .stroke(
-                    AngularGradient(colors: [accent.opacity(0.48), accent], center: .center),
-                    style: StrokeStyle(lineWidth: compact ? 5 : 7, lineCap: .round)
+                    AngularGradient(colors: [accent.opacity(0.35), accent.opacity(0.72), accent], center: .center),
+                    style: StrokeStyle(lineWidth: compact ? 7 : 10, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
 
@@ -33,7 +33,7 @@ struct TimerCountdownRing: View {
                 } else {
                     if controller.isRunning {
                         Text(controller.remainingText)
-                            .font(.system(size: compact ? 21 : 36, weight: .medium, design: .rounded))
+                            .font(.system(size: compact ? 21 : 42, weight: .medium, design: .rounded))
                             .monospacedDigit()
                     } else {
                         DurationInput(controller: controller, large: !compact)
@@ -45,9 +45,9 @@ struct TimerCountdownRing: View {
                 }
             }
         }
-        .padding(compact ? 9 : 13)
+        .padding(compact ? 10 : 16)
         .timerGlassSurface()
-        .frame(width: compact ? 130 : 220, height: compact ? 130 : 220)
+        .frame(width: compact ? 130 : 240, height: compact ? 130 : 240)
     }
 }
 
@@ -62,7 +62,7 @@ struct DurationInput: View {
         ))
             .textFieldStyle(.plain)
             .multilineTextAlignment(.center)
-            .font(.system(size: large ? 36 : 16, weight: .medium, design: .rounded))
+            .font(.system(size: large ? 42 : 16, weight: .medium, design: .rounded))
             .monospacedDigit()
             .accessibilityLabel("Время таймера в минутах, от 1 до 720")
     }
@@ -91,9 +91,11 @@ struct DurationControls: View {
 extension View {
     @ViewBuilder func timerGlassSurface() -> some View {
         if #available(macOS 26.0, *) {
-            self.glassEffect(.regular.tint(.indigo.opacity(0.10)), in: .circle)
+            self.glassEffect(.regular.tint(.indigo.opacity(0.14)), in: .circle)
+                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false))
         } else {
             self.background(.regularMaterial, in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false))
         }
     }
 }
