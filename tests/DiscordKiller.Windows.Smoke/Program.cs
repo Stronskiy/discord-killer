@@ -18,6 +18,20 @@ internal static class Program
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseDesktop(IntPtr desktop);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
 
@@ -83,6 +97,7 @@ internal static class Program
 
             var input = WaitFor("duration input", TimeSpan.FromSeconds(10), () => Find(window, ControlType.Edit,
                 "Timer duration in minutes", "Длительность таймера в минутах"));
+            CaptureOwnedWindow(app, "idle.png");
             var value = (ValuePattern)input.GetCurrentPattern(ValuePattern.Pattern);
 
             value.SetValue("0");
@@ -101,7 +116,7 @@ internal static class Program
 
             // Even if a UI Automation call hangs after Start, terminate only
             // the owned app before a one-minute timer could reach zero.
-            using var watchdog = new Timer(_ =>
+            using var watchdog = new System.Threading.Timer(_ =>
             {
                 try
                 {
@@ -131,6 +146,8 @@ internal static class Program
                 }
                 return null;
             });
+
+            CaptureOwnedWindow(app, "running.png");
 
             ((InvokePattern)cancel.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
             WaitFor("timer cancelled and start restored", TimeSpan.FromSeconds(5), () =>
@@ -166,6 +183,54 @@ internal static class Program
     {
         Console.WriteLine($"UNVERIFIED: {reason}");
         return 2;
+    }
+
+    // This method is reached only after the isolated hosted-runner checks above.
+    // Capture the owned app window, never the desktop or a user-selected window.
+    private static void CaptureOwnedWindow(Process app, string name)
+    {
+        if (Environment.GetEnvironmentVariable("DISCORD_KILLER_CAPTURE_HOSTED_UI") != "1") return;
+        var temp = Environment.GetEnvironmentVariable("RUNNER_TEMP");
+        if (string.IsNullOrEmpty(temp)) return;
+        try
+        {
+            app.Refresh();
+            IntPtr hwnd = app.MainWindowHandle;
+            if (hwnd == IntPtr.Zero || GetWindowThreadProcessId(hwnd, out uint owner) == 0 || owner != (uint)app.Id
+                || !GetWindowRect(hwnd, out var rect))
+                throw new InvalidOperationException("Owned window is unavailable.");
+            int width = rect.Right - rect.Left;
+            int height = rect.Bottom - rect.Top;
+            if (width <= 0 || height <= 0 || width > 4096 || height > 4096)
+                throw new InvalidOperationException("Window dimensions are invalid.");
+            // PrintWindow writes RGB pixels but does not reliably set alpha.
+            using var bitmap = new System.Drawing.Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+            using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
+            {
+                IntPtr dc = graphics.GetHdc();
+                try
+                {
+                    if (!PrintWindow(hwnd, dc, 2)) throw new InvalidOperationException("PrintWindow failed.");
+                }
+                finally { graphics.ReleaseHdc(dc); }
+            }
+            var first = bitmap.GetPixel(0, 0).ToArgb();
+            bool varied = false;
+            for (int y = 0; y < height && !varied; y += Math.Max(1, height / 16))
+                for (int x = 0; x < width; x += Math.Max(1, width / 16))
+                    if (bitmap.GetPixel(x, y).ToArgb() != first) { varied = true; break; }
+            if (!varied) throw new InvalidOperationException("Captured image is blank.");
+            string output = Path.Combine(temp, "discord-killer-ui-smoke");
+            Directory.CreateDirectory(output);
+            bitmap.Save(Path.Combine(output, name), System.Drawing.Imaging.ImageFormat.Png);
+            Console.WriteLine($"Captured owned window: {name}");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception
+                                    or System.Runtime.InteropServices.ExternalException or IOException
+                                    or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"UNVERIFIED screenshot {name}: {ex.Message}");
+        }
     }
 
     private static AutomationElement? FindStart(AutomationElement window) => Find(window, ControlType.Button,
